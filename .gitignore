@@ -2,6 +2,9 @@
 BUILD_GUIDE.md
 STACK.md
 .env
+.env.*
+!.env.example
+!.example.env
 
 # Logs
 logs
@@ -16,18 +19,54 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+build
 *.local
+*.tsbuildinfo
 
 # Python
 .venv
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+*.cover
+.hypothesis/
+.ipynb_checkpoints/
 
-# Editor directories and files
+# Local data / runtime
+*.db
+*.sqlite
+*.sqlite3
+.chroma/
+chroma/
+*.bin
+*.pkl
+*.pickle
+
+# Editor / OS
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*~
