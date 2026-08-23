@@ -12,5 +12,6 @@ dependencies = [
     "langchain-text-splitters>=1.1.2",
     "langgraph>=1.2.11",
     "pandas>=3.0.5",
+    "pinecone>=9.1.0",
     "uvicorn[standard]>=0.52.3",
 ]
