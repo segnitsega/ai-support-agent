@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import re
 from typing import Literal
 
 from dotenv import load_dotenv
@@ -5,8 +8,14 @@ from langchain.chat_models import init_chat_model
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
+from app.mcp import (
+    CreateTicketArgs,
+    OrderLookupArgs,
+    call_create_ticket,
+    call_get_order_status,
+)
 from app.rag import retrieve
 
 load_dotenv()
@@ -43,9 +52,23 @@ User message:
 {question}
 """
 
+ORDER_ID_PATTERN = re.compile(
+    r"(?:order\s*(?:number|id|#)?\s*|#)\s*(\d{3,})",
+    re.IGNORECASE,
+)
+
 
 class RouteDecision(BaseModel):
     route: Route = Field(description="The routing category for this message.")
+
+
+class TicketDraft(BaseModel):
+    subject: str = Field(description="Short ticket subject")
+    description: str = Field(description="Detailed description of the issue")
+    priority: Literal["low", "normal", "high"] = "normal"
+    customer_email: str = Field(
+        description="Customer email if present, otherwise customer@example.com"
+    )
 
 
 class AgentState(BaseModel):
@@ -55,20 +78,49 @@ class AgentState(BaseModel):
     question_type: Route | str = ""
 
 
-rag_prompt = ChatPromptTemplate.from_messages([
-    (
-        "system",
-        "You are a customer support assistant for Segni Electronics. "
-        "Answer using only the provided context. If the context is insufficient, say so.",
-    ),
-    (
-        "human",
-        "Context:\n{context}\n\nQuestion:\n{question}",
-    ),
-])
+rag_prompt = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            "You are a customer support assistant for Segni Electronics. "
+            "Answer using only the provided context. If the context is insufficient, say so.",
+        ),
+        (
+            "human",
+            "Context:\n{context}\n\nQuestion:\n{question}",
+        ),
+    ]
+)
 
 llm = init_chat_model("google_genai:gemini-3.5-flash")
 classifier = llm.with_structured_output(RouteDecision)
+ticket_drafter = llm.with_structured_output(TicketDraft)
+
+
+def _answer_text(answer) -> str:
+    """Normalize Gemini content (str or list of blocks) into plain text."""
+    if isinstance(answer, str):
+        return answer
+    if isinstance(answer, list):
+        parts = []
+        for block in answer:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+            else:
+                parts.append(str(block))
+        return "\n".join(part for part in parts if part)
+    return str(answer)
+
+
+def _extract_order_id(question: str) -> str | None:
+    match = ORDER_ID_PATTERN.search(question)
+    if match:
+        return match.group(1)
+    # Fallback: bare number that looks like an order id.
+    bare = re.search(r"\b(\d{3,})\b", question)
+    return bare.group(1) if bare else None
 
 
 def classify_node(state: AgentState) -> dict:
@@ -81,9 +133,7 @@ def classify_node(state: AgentState) -> dict:
             print(f"[route] keyword guardrail → ESCALATE (matched: {keyword!r})")
             return {"question_type": "ESCALATE"}
 
-    decision = classifier.invoke(
-        CLASSIFY_PROMPT.format(question=question),
-    )
+    decision = classifier.invoke(CLASSIFY_PROMPT.format(question=question))
     route = decision.route
     print(f"[route] classifier → {route}")
     return {"question_type": route}
@@ -122,26 +172,65 @@ def answer_from_docs(state: AgentState) -> dict:
 
 
 def order_lookup(state: AgentState) -> dict:
-    """Stub: fake order lookup until MCP is wired in Stage 4."""
-    print("[node] order_lookup (stub)")
-    return {
-        "bot_answer": (
-            "I looked up your order #1234 (stub). Status: out for delivery, "
-            "expected today by 6 PM. Reply with your order number for a real lookup in Stage 4."
-        ),
-    }
+    """Extract order ID, validate, and call the order-lookup MCP server."""
+    print("[node] order_lookup")
+    raw_id = _extract_order_id(state.user_question)
+    if not raw_id:
+        return {
+            "bot_answer": (
+                "I can look up your order, but I need an order number "
+                "(for example #1234). Please reply with your order ID."
+            ),
+        }
+
+    try:
+        args = OrderLookupArgs(order_id=raw_id)
+    except ValidationError as exc:
+        return {
+            "bot_answer": (
+                "That order number doesn't look valid. "
+                f"Please send a numeric ID like #1234.\nDetails: {exc.errors()[0]['msg']}"
+            ),
+        }
+
+    print(f"[mcp] get_order_status({args.order_id})")
+    result = call_get_order_status(args.order_id)
+    return {"bot_answer": result}
 
 
 def book_ticket(state: AgentState) -> dict:
-    """Stub: fake ticket creation until Airtable MCP is wired in Stage 4."""
-    print("[node] book_ticket (stub)")
-    return {
-        "bot_answer": (
-            "I've prepared a support ticket for your issue (stub). "
-            "Ticket draft: subject='Customer issue', priority='normal'. "
-            "Human approval + Airtable integration comes in Stage 4–5."
-        ),
-    }
+    """Draft ticket fields, validate with Pydantic, call Airtable MCP server."""
+    print("[node] book_ticket")
+    draft = ticket_drafter.invoke(
+        "Draft an Airtable support ticket from this customer message. "
+        "If no email is present, use customer@example.com.\n\n"
+        f"Customer message:\n{state.user_question}"
+    )
+
+    try:
+        args = CreateTicketArgs(
+            subject=draft.subject,
+            description=draft.description,
+            priority=draft.priority,
+            customer_email=draft.customer_email,
+        )
+    except ValidationError as exc:
+        return {
+            "bot_answer": (
+                "I couldn't create a ticket because some fields were invalid. "
+                "Please provide a valid email and a clearer description of the issue.\n"
+                f"Validation error: {exc}"
+            ),
+        }
+
+    print(f"[mcp] create_ticket(subject={args.subject!r}, priority={args.priority})")
+    result = call_create_ticket(
+        subject=args.subject,
+        description=args.description,
+        priority=args.priority,
+        customer_email=str(args.customer_email),
+    )
+    return {"bot_answer": result}
 
 
 def escalate(state: AgentState) -> dict:
@@ -184,25 +273,8 @@ graph.add_edge("escalation", END)
 app = graph.compile()
 
 
-def _answer_text(answer) -> str:
-    """Normalize Gemini content (str or list of blocks) into plain text."""
-    if isinstance(answer, str):
-        return answer
-    if isinstance(answer, list):
-        parts = []
-        for block in answer:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            elif isinstance(block, str):
-                parts.append(block)
-            else:
-                parts.append(str(block))
-        return "\n".join(part for part in parts if part)
-    return str(answer)
-
-
 if __name__ == "__main__":
-    question = "I have an order to buy 2 items, I want to know the status"
+    question = "Where is my order #1234?"
     result = app.invoke({"user_question": question})
 
     answer = _answer_text(result["bot_answer"])
