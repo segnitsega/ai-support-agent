@@ -274,7 +274,8 @@ app = graph.compile()
 
 
 if __name__ == "__main__":
-    question = "Where is my order #1234?"
+    question = ("Please open a support ticket — my laptop won't turn on. "
+    "Email me at you@example.com")
     result = app.invoke({"user_question": question})
 
     answer = _answer_text(result["bot_answer"])

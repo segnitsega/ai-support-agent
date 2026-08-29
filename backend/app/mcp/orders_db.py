@@ -18,7 +18,10 @@ SEED_ORDERS = [
 
 
 def get_db_path() -> Path:
-    return Path(os.getenv("ORDERS_DB_PATH", DEFAULT_DB_PATH))
+    configured = os.getenv("ORDERS_DB_PATH")
+    if configured:
+        return Path(configured)
+    return DEFAULT_DB_PATH
 
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
