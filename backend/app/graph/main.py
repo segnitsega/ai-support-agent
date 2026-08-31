@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Literal
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ValidationError
 
 from app.mcp import (
@@ -27,7 +30,6 @@ Route = Literal[
     "ESCALATE",
 ]
 
-# Hard guardrail: force escalation regardless of LLM classification.
 ESCALATE_KEYWORDS = [
     "lawsuit",
     "lawyer",
@@ -76,6 +78,8 @@ class AgentState(BaseModel):
     bot_answer: str = ""
     retrieve_result: list[Document] = []
     question_type: Route | str = ""
+    pending_ticket: dict | None = None
+    approval_decision: str = ""
 
 
 rag_prompt = ChatPromptTemplate.from_messages(
@@ -96,6 +100,8 @@ llm = init_chat_model("google_genai:gemini-3.5-flash")
 classifier = llm.with_structured_output(RouteDecision)
 ticket_drafter = llm.with_structured_output(TicketDraft)
 
+checkpointer = MemorySaver()
+
 
 def _answer_text(answer) -> str:
     """Normalize Gemini content (str or list of blocks) into plain text."""
@@ -114,11 +120,17 @@ def _answer_text(answer) -> str:
     return str(answer)
 
 
+def _normalize_approval(decision: object) -> str:
+    value = str(decision).strip().lower()
+    if value in {"approved", "approve", "yes", "y", "true"}:
+        return "approved"
+    return "rejected"
+
+
 def _extract_order_id(question: str) -> str | None:
     match = ORDER_ID_PATTERN.search(question)
     if match:
         return match.group(1)
-    # Fallback: bare number that looks like an order id.
     bare = re.search(r"\b(\d{3,})\b", question)
     return bare.group(1) if bare else None
 
@@ -151,6 +163,13 @@ def route_by_type(state: AgentState) -> str:
         print(f"[route] unknown route {route!r}, defaulting to ESCALATE")
         return "ESCALATE"
     return route
+
+
+def route_after_approval(state: AgentState) -> str:
+    """Route to ticket execution or rejection after human approval."""
+    if _normalize_approval(state.approval_decision) == "approved":
+        return "execute_ticket"
+    return "reject_ticket"
 
 
 def retrieve_node(state: AgentState) -> dict:
@@ -198,9 +217,9 @@ def order_lookup(state: AgentState) -> dict:
     return {"bot_answer": result}
 
 
-def book_ticket(state: AgentState) -> dict:
-    """Draft ticket fields, validate with Pydantic, call Airtable MCP server."""
-    print("[node] book_ticket")
+def draft_ticket(state: AgentState) -> dict:
+    """Draft ticket fields and store them for human approval."""
+    print("[node] draft_ticket")
     draft = ticket_drafter.invoke(
         "Draft an Airtable support ticket from this customer message. "
         "If no email is present, use customer@example.com.\n\n"
@@ -217,20 +236,83 @@ def book_ticket(state: AgentState) -> dict:
     except ValidationError as exc:
         return {
             "bot_answer": (
-                "I couldn't create a ticket because some fields were invalid. "
+                "I couldn't prepare a ticket because some fields were invalid. "
                 "Please provide a valid email and a clearer description of the issue.\n"
                 f"Validation error: {exc}"
             ),
+            "pending_ticket": None,
         }
 
-    print(f"[mcp] create_ticket(subject={args.subject!r}, priority={args.priority})")
-    result = call_create_ticket(
-        subject=args.subject,
-        description=args.description,
-        priority=args.priority,
-        customer_email=str(args.customer_email),
+    return {
+        "pending_ticket": {
+            "subject": args.subject,
+            "description": args.description,
+            "priority": args.priority,
+            "customer_email": str(args.customer_email),
+        }
+    }
+
+
+def approve_ticket(state: AgentState) -> dict:
+    """Pause for human approval before creating the Airtable ticket."""
+    if not state.pending_ticket:
+        return {
+            "bot_answer": "No ticket draft is available for approval.",
+            "approval_decision": "rejected",
+        }
+
+    print("[node] approve_ticket (waiting for human approval)")
+    decision = interrupt(
+        {
+            "type": "ticket_approval_required",
+            "message": "Approve creating this support ticket?",
+            "ticket": state.pending_ticket,
+        }
     )
-    return {"bot_answer": result}
+    normalized = _normalize_approval(decision)
+    print(f"[approval] human decision → {normalized}")
+    return {"approval_decision": normalized}
+
+
+def execute_ticket(state: AgentState) -> dict:
+    """Create the ticket in Airtable after approval."""
+    print("[node] execute_ticket")
+    ticket = state.pending_ticket
+    if not ticket:
+        return {
+            "bot_answer": "Cannot create ticket: missing ticket draft.",
+            "pending_ticket": None,
+            "approval_decision": "",
+        }
+
+    print(
+        f"[mcp] create_ticket(subject={ticket['subject']!r}, "
+        f"priority={ticket['priority']})"
+    )
+    result = call_create_ticket(
+        subject=ticket["subject"],
+        description=ticket["description"],
+        priority=ticket["priority"],
+        customer_email=ticket["customer_email"],
+    )
+    return {
+        "bot_answer": result,
+        "pending_ticket": None,
+        "approval_decision": "",
+    }
+
+
+def reject_ticket(state: AgentState) -> dict:
+    """Handle a rejected ticket approval."""
+    print("[node] reject_ticket")
+    return {
+        "bot_answer": (
+            "Ticket creation was not approved. "
+            "I'll connect you with a human agent to follow up."
+        ),
+        "pending_ticket": None,
+        "approval_decision": "",
+    }
 
 
 def escalate(state: AgentState) -> dict:
@@ -244,13 +326,23 @@ def escalate(state: AgentState) -> dict:
     }
 
 
+def _route_after_draft(state: AgentState) -> str:
+    """Skip approval when draft validation already produced an answer."""
+    if state.bot_answer:
+        return "end"
+    return "approve_ticket"
+
+
 graph = StateGraph(AgentState)
 
 graph.add_node("classify", classify_node)
 graph.add_node("retrieve", retrieve_node)
 graph.add_node("rag_node", answer_from_docs)
 graph.add_node("order_lookup", order_lookup)
-graph.add_node("book_ticket", book_ticket)
+graph.add_node("draft_ticket", draft_ticket)
+graph.add_node("approve_ticket", approve_ticket)
+graph.add_node("execute_ticket", execute_ticket)
+graph.add_node("reject_ticket", reject_ticket)
 graph.add_node("escalation", escalate)
 
 graph.add_edge(START, "classify")
@@ -260,25 +352,66 @@ graph.add_conditional_edges(
     {
         "ANSWER_FROM_DOCS": "retrieve",
         "NEEDS_ORDER_LOOKUP": "order_lookup",
-        "NEEDS_TICKET": "book_ticket",
+        "NEEDS_TICKET": "draft_ticket",
         "ESCALATE": "escalation",
+    },
+)
+graph.add_conditional_edges(
+    "draft_ticket",
+    _route_after_draft,
+    {
+        "approve_ticket": "approve_ticket",
+        "end": END,
     },
 )
 graph.add_edge("retrieve", "rag_node")
 graph.add_edge("rag_node", END)
 graph.add_edge("order_lookup", END)
-graph.add_edge("book_ticket", END)
+graph.add_conditional_edges(
+    "approve_ticket",
+    route_after_approval,
+    {
+        "execute_ticket": "execute_ticket",
+        "reject_ticket": "reject_ticket",
+    },
+)
+graph.add_edge("execute_ticket", END)
+graph.add_edge("reject_ticket", END)
 graph.add_edge("escalation", END)
 
-app = graph.compile()
+app = graph.compile(checkpointer=checkpointer)
 
 
-if __name__ == "__main__":
-    question = ("Please open a support ticket — my laptop won't turn on. "
-    "Email me at you@example.com")
-    result = app.invoke({"user_question": question})
+def run_agent(question: str, *, thread_id: str | None = None) -> dict:
+    """Run the graph, pausing for ticket approval when needed."""
+    config = {"configurable": {"thread_id": thread_id or str(uuid.uuid4())}}
+    result = app.invoke({"user_question": question}, config)
 
-    answer = _answer_text(result["bot_answer"])
+    snapshot = app.get_state(config)
+    if snapshot.next:
+        pending = snapshot.values.get("pending_ticket")
+        print()
+        print("=" * 60)
+        print("TICKET APPROVAL REQUIRED")
+        print("=" * 60)
+        if pending:
+            for key, value in pending.items():
+                print(f"{key}: {value}")
+        else:
+            print("No ticket draft found.")
+        print("-" * 60)
+
+        choice = input("Approve ticket creation? (y/n): ").strip().lower()
+        resume_value = "approved" if choice in {"y", "yes"} else "rejected"
+        result = app.invoke(Command(resume=resume_value), config)
+
+    if isinstance(result, dict):
+        return result
+    return dict(result)
+
+
+def _print_result(question: str, result: dict) -> None:
+    answer = _answer_text(result.get("bot_answer", ""))
     docs = result.get("retrieve_result") or []
     route = result.get("question_type", "unknown")
 
@@ -302,6 +435,15 @@ if __name__ == "__main__":
             print(f"      {preview}")
         print("-" * 60)
     print("Answer:")
-    print(answer)
+    print(answer or "(no answer yet)")
     print("=" * 60)
     print()
+
+
+if __name__ == "__main__":
+    demo_question = (
+        "Please open a support ticket — my laptop won't turn on. "
+        "Email me at you@example.com"
+    )
+    final_state = run_agent(demo_question)
+    _print_result(demo_question, final_state)
