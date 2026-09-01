@@ -9,6 +9,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ValidationError
@@ -103,6 +104,14 @@ ticket_drafter = llm.with_structured_output(TicketDraft)
 checkpointer = MemorySaver()
 
 
+def _emit(payload: dict) -> None:
+    """Push a custom SSE event when the graph is streamed; no-op for invoke()."""
+    try:
+        get_stream_writer()(payload)
+    except RuntimeError:
+        return
+
+
 def _answer_text(answer) -> str:
     """Normalize Gemini content (str or list of blocks) into plain text."""
     if isinstance(answer, str):
@@ -186,8 +195,12 @@ def answer_from_docs(state: AgentState) -> dict:
         context=context or "No relevant documents found.",
         question=state.user_question,
     )
-    response = llm.invoke(messages)
-    return {"bot_answer": _answer_text(response.content)}
+    parts: list[str] = []
+    for chunk in llm.stream(messages):
+        text = _answer_text(chunk.content)
+        if text:
+            parts.append(text)
+    return {"bot_answer": "".join(parts)}
 
 
 def order_lookup(state: AgentState) -> dict:
@@ -213,7 +226,21 @@ def order_lookup(state: AgentState) -> dict:
         }
 
     print(f"[mcp] get_order_status({args.order_id})")
+    _emit(
+        {
+            "event": "tool_call_started",
+            "tool": "get_order_status",
+            "order_id": args.order_id,
+        }
+    )
     result = call_get_order_status(args.order_id)
+    _emit(
+        {
+            "event": "tool_call_result",
+            "tool": "get_order_status",
+            "result": result,
+        }
+    )
     return {"bot_answer": result}
 
 
@@ -289,11 +316,25 @@ def execute_ticket(state: AgentState) -> dict:
         f"[mcp] create_ticket(subject={ticket['subject']!r}, "
         f"priority={ticket['priority']})"
     )
+    _emit(
+        {
+            "event": "tool_call_started",
+            "tool": "create_ticket",
+            "ticket": ticket,
+        }
+    )
     result = call_create_ticket(
         subject=ticket["subject"],
         description=ticket["description"],
         priority=ticket["priority"],
         customer_email=ticket["customer_email"],
+    )
+    _emit(
+        {
+            "event": "tool_call_result",
+            "tool": "create_ticket",
+            "result": result,
+        }
     )
     return {
         "bot_answer": result,
