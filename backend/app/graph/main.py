@@ -442,8 +442,8 @@ def _print_result(question: str, result: dict) -> None:
 
 if __name__ == "__main__":
     demo_question = (
-        "Please open a support ticket — my laptop won't turn on. "
-        "Email me at you@example.com"
+        "Please open a support ticket — my Mobile won't restart "
+        "Email me at sanyii@example.com"
     )
     final_state = run_agent(demo_question)
     _print_result(demo_question, final_state)
