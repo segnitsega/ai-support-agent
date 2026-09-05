@@ -7,14 +7,21 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel, Field
 
+from app.approvals import (
+    get_approval,
+    init_db as init_approvals_db,
+    list_approvals,
+    resolve_approval,
+    upsert_pending,
+)
 from app.graph.main import _answer_text, app as agent
-from app.stats import get_stats, init_db, record_run
+from app.stats import get_stats, init_db as init_stats_db, record_run
 
 SSE_HEADERS = {
     "Cache-Control": "no-cache",
@@ -41,9 +48,29 @@ class StatsResponse(BaseModel):
     tickets_created: int
 
 
+class TicketDraft(BaseModel):
+    subject: str
+    description: str
+    priority: str
+    customer_email: str
+
+
+class ApprovalItem(BaseModel):
+    thread_id: str
+    status: Literal["pending", "approved", "rejected"]
+    user_question: str
+    route: str
+    ticket: TicketDraft
+    bot_answer: str = ""
+    created_at: str
+    updated_at: str
+    resolved_at: str | None = None
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    init_db()
+    init_stats_db()
+    init_approvals_db()
     yield
 
 
@@ -69,6 +96,22 @@ async def stats():
     return get_stats()
 
 
+@app.get("/approvals", response_model=list[ApprovalItem])
+async def approvals(
+    status: Literal["pending", "approved", "rejected", "all"] = Query("pending"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    return list_approvals(status=status, limit=limit)
+
+
+@app.get("/approvals/{thread_id}", response_model=ApprovalItem)
+async def approval_detail(thread_id: str):
+    row = get_approval(thread_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Approval not found.")
+    return row
+
+
 @app.post("/chat")
 async def chat(body: ChatRequest):
     thread_id = body.thread_id or str(uuid.uuid4())
@@ -85,8 +128,21 @@ async def approve(body: ApproveRequest):
             detail="No pending ticket approval for this thread_id.",
         )
 
+    queued = get_approval(body.thread_id)
+    if queued is not None and queued["status"] != "pending":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Approval already resolved as {queued['status']}.",
+        )
+
     resume = "approved" if body.approved else "rejected"
-    return _sse_response(_stream_run(Command(resume=resume), body.thread_id))
+    return _sse_response(
+        _stream_run(
+            Command(resume=resume),
+            body.thread_id,
+            approval_decision="approved" if body.approved else "rejected",
+        )
+    )
 
 
 def _sse_response(events: AsyncIterator[tuple[str, dict]]) -> StreamingResponse:
@@ -108,6 +164,8 @@ async def _encode_sse(events: AsyncIterator[tuple[str, dict]]) -> AsyncIterator[
 async def _stream_run(
     graph_input: dict | Command,
     thread_id: str,
+    *,
+    approval_decision: Literal["approved", "rejected"] | None = None,
 ) -> AsyncIterator[tuple[str, dict]]:
     config = {"configurable": {"thread_id": thread_id}}
     seen_nodes: set[str] = set()
@@ -133,6 +191,26 @@ async def _stream_run(
         interrupted_payload = _interrupt_from_snapshot(snapshot)
         if interrupted_payload:
             yield "approval_required", {**interrupted_payload, "thread_id": thread_id}
+
+    if pending:
+        ticket = None
+        if interrupted_payload and isinstance(interrupted_payload.get("ticket"), dict):
+            ticket = interrupted_payload["ticket"]
+        elif isinstance(public.get("pending_ticket"), dict):
+            ticket = public["pending_ticket"]
+        if ticket:
+            upsert_pending(
+                thread_id=thread_id,
+                ticket=ticket,
+                user_question=str(public.get("user_question") or ""),
+                route=str(public.get("question_type") or ""),
+            )
+    elif approval_decision is not None:
+        resolve_approval(
+            thread_id=thread_id,
+            status=approval_decision,
+            bot_answer=str(public.get("bot_answer") or ""),
+        )
 
     status: Literal["completed", "needs_approval"] = (
         "needs_approval" if pending else "completed"
@@ -264,14 +342,21 @@ def _public_state(values: Any) -> dict:
             "bot_answer": values.bot_answer or "",
             "question_type": values.question_type or "",
             "pending_ticket": values.pending_ticket,
+            "user_question": getattr(values, "user_question", "") or "",
         }
     if isinstance(values, dict):
         return {
             "bot_answer": values.get("bot_answer") or "",
             "question_type": values.get("question_type") or "",
             "pending_ticket": values.get("pending_ticket"),
+            "user_question": values.get("user_question") or "",
         }
-    return {"bot_answer": "", "question_type": "", "pending_ticket": None}
+    return {
+        "bot_answer": "",
+        "question_type": "",
+        "pending_ticket": None,
+        "user_question": "",
+    }
 
 
 def _outcome(route: str, seen_nodes: set[str]) -> str:

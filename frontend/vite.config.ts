@@ -9,6 +9,7 @@ export default defineConfig({
       "/chat": "http://127.0.0.1:8000",
       "/approve": "http://127.0.0.1:8000",
       "/stats": "http://127.0.0.1:8000",
+      "/approvals": "http://127.0.0.1:8000",
     },
   },
 });
