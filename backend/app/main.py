@@ -158,7 +158,49 @@ async def _encode_sse(events: AsyncIterator[tuple[str, dict]]) -> AsyncIterator[
         async for event, data in events:
             yield _sse(event, data)
     except Exception as exc:
-        yield _sse("error", {"message": str(exc)})
+        print(f"[api] stream error: {exc}")
+        yield _sse(
+            "error",
+            {
+                "message": _public_error_message(exc),
+                "code": _error_code(exc),
+            },
+        )
+
+
+def _error_code(exc: BaseException) -> str:
+    text = str(exc).lower()
+    if any(
+        token in text
+        for token in (
+            "resource_exhausted",
+            "429",
+            "quota",
+            "rate limit",
+            "ratelimit",
+        )
+    ):
+        return "rate_limited"
+    if any(token in text for token in ("api key", "unauthenticated", "401", "403")):
+        return "auth"
+    if any(token in text for token in ("timeout", "timed out", "deadline")):
+        return "timeout"
+    return "internal"
+
+
+def _public_error_message(exc: BaseException) -> str:
+    """Map provider/infra failures to short user-facing copy."""
+    code = _error_code(exc)
+    if code == "rate_limited":
+        return (
+            "We're getting a lot of requests right now. "
+            "Please wait a moment and try again."
+        )
+    if code == "auth":
+        return "The support service is temporarily unavailable. Please try again later."
+    if code == "timeout":
+        return "That took too long to answer. Please try again."
+    return "Something went wrong while processing your request. Please try again."
 
 
 async def _stream_run(

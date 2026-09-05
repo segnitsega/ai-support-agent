@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { chat, getApproval, toolStatusLabel } from '../api/client'
+import { friendlyError } from '../api/errors'
 import type { ChatMessage } from '../api/types'
 import { MessageContent } from './MessageContent'
 
@@ -29,14 +30,17 @@ export function ChatPage() {
   )
 
   const listRef = useRef<HTMLDivElement>(null)
+  const bottomRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   const inputId = useId()
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = listRef.current
     if (!el) return
+    // Keep the latest message in view while streaming / after each update.
     el.scrollTop = el.scrollHeight
-  }, [messages, statusText, waitingThreadId])
+    bottomRef.current?.scrollIntoView({ block: 'end' })
+  }, [messages, statusText, waitingThreadId, error])
 
   useEffect(() => {
     return () => abortRef.current?.abort()
@@ -158,8 +162,13 @@ export function ChatPage() {
         break
       }
       case 'error': {
-        setError(String(data.message ?? 'Something went wrong'))
+        const message = friendlyError(data.message)
+        setError(message)
         setStatusText('')
+        updateAssistant(assistantId, {
+          text: message,
+          streaming: false,
+        })
         break
       }
       default:
@@ -195,16 +204,26 @@ export function ChatPage() {
     setStatusText('Thinking…')
 
     let awaitingApproval = false
+    let streamFailed = false
 
     try {
       await chat(
         trimmed,
         (event, data) => {
           if (event === 'approval_required') awaitingApproval = true
+          if (event === 'error') streamFailed = true
           handleSse(event, data, assistantId)
         },
         controller.signal,
       )
+      if (streamFailed) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId ? { ...m, streaming: false } : m,
+          ),
+        )
+        return
+      }
       setMessages((prev) =>
         prev.map((m) => {
           if (m.id !== assistantId) return m
@@ -217,16 +236,19 @@ export function ChatPage() {
           }
           return {
             ...m,
-            text: m.text || 'No response received.',
+            text:
+              m.text ||
+              "I couldn't generate a response just now. Please try again.",
             streaming: false,
           }
         }),
       )
     } catch (err) {
       if ((err as Error).name === 'AbortError') return
-      setError((err as Error).message)
+      const message = friendlyError(err)
+      setError(message)
       updateAssistant(assistantId, {
-        text: 'Sorry — I could not complete that request.',
+        text: message,
         streaming: false,
       })
       setStatusText('')
@@ -311,6 +333,7 @@ export function ChatPage() {
               {statusText}
             </div>
           )}
+          <div ref={bottomRef} aria-hidden="true" />
         </div>
 
         {error && <p className="error-banner">{error}</p>}

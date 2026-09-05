@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { approve, listApprovals } from '../api/client'
+import { friendlyError } from '../api/errors'
 import type { ApprovalItem, ApprovalStatus } from '../api/types'
 import { MessageContent } from './MessageContent'
 
@@ -43,7 +44,7 @@ export function AdminPage() {
         return rows[0]?.thread_id ?? null
       })
     } catch (err) {
-      setError((err as Error).message)
+      setError(friendlyError(err))
     } finally {
       setLoading(false)
     }
@@ -91,7 +92,7 @@ export function AdminPage() {
       )
       await load()
     } catch (err) {
-      setError((err as Error).message)
+      setError(friendlyError(err))
     } finally {
       setActing(false)
     }

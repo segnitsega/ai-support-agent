@@ -16,7 +16,8 @@
   --amber-soft: #fde8c8;
   --danger: #9f1239;
   --danger-soft: #ffe4e8;
-  --shadow: 0 18px 50px rgba(28, 36, 48, 0.08);
+  --shadow: 0 6px 18px rgba(28, 36, 48, 0.04);
+  --shadow-soft: 0 2px 8px rgba(28, 36, 48, 0.03);
   --radius: 18px;
   --font-sans: 'DM Sans Variable', 'DM Sans', system-ui, sans-serif;
   --font-serif: 'Source Serif 4', Georgia, serif;
@@ -213,7 +214,7 @@ a {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-soft);
   overflow: hidden;
   min-height: 70vh;
 }
