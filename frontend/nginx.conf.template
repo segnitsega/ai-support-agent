@@ -1,19 +1,27 @@
 server {
-    listen 80;
+    listen ${PORT};
     server_name _;
 
     root /usr/share/nginx/html;
     index index.html;
+
+    # Runtime DNS — avoids "host not found in upstream" at nginx startup
+    # (Render private DNS / cold starts). 127.0.0.11 = Docker; 8.8.8.8 = public.
+    resolver 127.0.0.11 8.8.8.8 valid=30s ipv6=off;
+    resolver_timeout 5s;
 
     # React Router (Chat / Admin / Dashboard)
     location / {
         try_files $uri $uri/ /index.html;
     }
 
+    # API + SSE — same paths the Vite proxy used in development
     location ~ ^/(chat|approve)$ {
-        proxy_pass https://ai-support-agent-fdw8:1000;
+        set $api_upstream "${API_UPSTREAM}";
+        proxy_pass $api_upstream;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_ssl_server_name on;
+        proxy_set_header Host ${API_HOST};
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
@@ -24,17 +32,21 @@ server {
     }
 
     location ~ ^/(stats|approvals) {
-        proxy_pass https://ai-support-agent-fdw8:1000;
+        set $api_upstream "${API_UPSTREAM}";
+        proxy_pass $api_upstream;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_ssl_server_name on;
+        proxy_set_header Host ${API_HOST};
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location ~ ^/(docs|openapi\.json) {
-        proxy_pass https://ai-support-agent-fdw8:1000;
+        set $api_upstream "${API_UPSTREAM}";
+        proxy_pass $api_upstream;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_ssl_server_name on;
+        proxy_set_header Host ${API_HOST};
     }
 }
