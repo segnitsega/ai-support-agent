@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { approve, chat, toolStatusLabel } from '../api/client'
 import type { ChatMessage, TicketDraft } from '../api/types'
 import { ApprovalModal } from './ApprovalModal'
+import { MessageContent } from './MessageContent'
 
 const EXAMPLES = [
   'What is your return policy?',
@@ -284,7 +285,11 @@ export function ChatPage() {
                 {m.role === 'user' ? 'You' : 'Agent'}
               </span>
               <div className="bubble-body">
-                {m.text || (m.streaming ? '…' : '')}
+                <MessageContent
+                  text={m.text}
+                  streaming={m.streaming}
+                  plain={m.role === 'user'}
+                />
               </div>
             </article>
           ))}
