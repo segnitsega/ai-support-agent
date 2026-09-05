@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -14,18 +15,25 @@ from app.rag.retriever import retrieve
 from app.rag.vector_store import upsert
 
 DEFAULT_FAQ_PATH = (
-    Path(__file__).resolve().parents[2] / "data" / "faq_docs" / "support_faq.jsonl"
+    Path(__file__).resolve().parents[2]
+    / "data"
+    / "faq_docs"
+    / "segni_support_handbook.md"
 )
+
+_SECTION_HEADER = re.compile(r"^##\s+(.+)$", re.MULTILINE)
 
 __all__ = [
     "DEFAULT_FAQ_PATH",
     "ingest",
     "load_faq_jsonl",
+    "load_markdown",
+    "load_support_docs",
     "retrieve",
 ]
 
 
-def load_faq_jsonl(path: Path | str = DEFAULT_FAQ_PATH) -> tuple[list[str], list[dict[str, Any]]]:
+def load_faq_jsonl(path: Path | str) -> tuple[list[str], list[dict[str, Any]]]:
     """Load FAQ rows from a JSONL file."""
     faq_path = Path(path)
     if not faq_path.is_file():
@@ -45,9 +53,112 @@ def load_faq_jsonl(path: Path | str = DEFAULT_FAQ_PATH) -> tuple[list[str], list
             metadata = dict(row.get("metadata") or {})
             metadata["source_file"] = faq_path.name
             metadata["source_line"] = line_number
+            metadata["source_format"] = "jsonl"
             texts.append(text)
             metadatas.append(metadata)
     return texts, metadatas
+
+
+def load_markdown(path: Path | str) -> tuple[list[str], list[dict[str, Any]]]:
+    """Load a support handbook markdown file as section-sized documents.
+
+    Splits on ``##`` headings so each policy section is embedded as its own
+    unit (then further chunked if still long).
+    """
+    md_path = Path(path)
+    if not md_path.is_file():
+        raise FileNotFoundError(f"Markdown file not found: {md_path}")
+
+    content = md_path.read_text(encoding="utf-8").strip()
+    if not content:
+        return [], []
+
+    matches = list(_SECTION_HEADER.finditer(content))
+    texts: list[str] = []
+    metadatas: list[dict[str, Any]] = []
+
+    if not matches:
+        texts.append(content)
+        metadatas.append(
+            {
+                "source_file": md_path.name,
+                "source_format": "markdown",
+                "title": md_path.stem,
+                "section": "full_document",
+            }
+        )
+        return texts, metadatas
+
+    # Keep a short preamble (title / intro before the first ##) if present.
+    preamble = content[: matches[0].start()].strip()
+    if preamble:
+        texts.append(preamble)
+        metadatas.append(
+            {
+                "source_file": md_path.name,
+                "source_format": "markdown",
+                "title": "Introduction",
+                "section": "preamble",
+                "category": "GENERAL",
+            }
+        )
+
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        section_text = content[start:end].strip()
+        if not section_text:
+            continue
+        heading = match.group(1).strip()
+        texts.append(section_text)
+        metadatas.append(
+            {
+                "source_file": md_path.name,
+                "source_format": "markdown",
+                "title": heading,
+                "section": heading,
+                "category": _category_from_heading(heading),
+                "section_index": index,
+            }
+        )
+
+    return texts, metadatas
+
+
+def load_support_docs(path: Path | str) -> tuple[list[str], list[dict[str, Any]]]:
+    """Load support docs from ``.md`` or ``.jsonl`` based on file suffix."""
+    doc_path = Path(path)
+    suffix = doc_path.suffix.lower()
+    if suffix in {".md", ".markdown"}:
+        return load_markdown(doc_path)
+    if suffix == ".jsonl":
+        return load_faq_jsonl(doc_path)
+    raise ValueError(
+        f"Unsupported support-doc format {suffix!r}. Use .md or .jsonl ({doc_path})"
+    )
+
+
+def _category_from_heading(heading: str) -> str:
+    lowered = heading.lower()
+    if "return" in lowered or "refund" in lowered:
+        return "RETURNS"
+    if re.search(r"\border", lowered):
+        return "ORDER"
+    if "ship" in lowered or "delivery" in lowered:
+        return "SHIPPING"
+    if "payment" in lowered or "invoice" in lowered:
+        return "PAYMENT"
+    if "warranty" in lowered or "defective" in lowered:
+        return "WARRANTY"
+    if "account" in lowered or "password" in lowered or "security" in lowered:
+        return "ACCOUNT"
+    if "contact" in lowered or "support" in lowered or "escalat" in lowered:
+        return "SUPPORT"
+    if "review" in lowered or "newsletter" in lowered:
+        return "ACCOUNT"
+    if "quick answer" in lowered:
+        return "GENERAL"
+    return "GENERAL"
 
 
 def ingest(
@@ -59,13 +170,15 @@ def ingest(
     embed_batch_size: int | None = None,
     embed_batch_delay_seconds: float | None = None,
 ) -> dict[str, int]:
-    """Chunk, embed, and store FAQ entries from a JSONL file."""
-    texts, metadatas = load_faq_jsonl(path)
+    """Chunk, embed, and store support docs from a Markdown or JSONL file."""
+    texts, metadatas = load_support_docs(path)
     chunks = chunk_texts(texts, metadatas=metadatas)
 
     client = embedder or build_embedder()
     effective_batch_size = embed_batch_size or 50
-    effective_delay = embed_batch_delay_seconds if embed_batch_delay_seconds is not None else 61.0
+    effective_delay = (
+        embed_batch_delay_seconds if embed_batch_delay_seconds is not None else 61.0
+    )
     total_upserted = 0
 
     for start in range(0, len(chunks), effective_batch_size):
@@ -107,9 +220,9 @@ def _print_retrieval_results(query: str, documents: list[Document]) -> None:
         return
     for rank, document in enumerate(documents, start=1):
         score = document.metadata.get("score")
-        intent = document.metadata.get("intent")
+        title = document.metadata.get("title") or document.metadata.get("intent")
         score_text = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
-        print(f"\n[{rank}] score={score_text} intent={intent}")
+        print(f"\n[{rank}] score={score_text} title={title}")
         print(document.page_content)
 
 
@@ -119,13 +232,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     ingest_parser = subparsers.add_parser(
         "ingest",
-        help="Chunk, embed, and upsert support_faq.jsonl into Pinecone",
+        help="Chunk, embed, and upsert a support .md or .jsonl file into Pinecone",
     )
     ingest_parser.add_argument(
         "--input",
         type=Path,
         default=DEFAULT_FAQ_PATH,
-        help=f"Path to FAQ JSONL (default: {DEFAULT_FAQ_PATH})",
+        help=f"Path to support docs (default: {DEFAULT_FAQ_PATH})",
     )
     ingest_parser.add_argument(
         "--embed-batch-size",
@@ -167,7 +280,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         print(
             "Ingest complete: "
-            f"{stats['source_rows']} FAQ rows -> "
+            f"{stats['source_rows']} source section(s) -> "
             f"{stats['chunks']} chunks -> "
             f"{stats['upserted']} vectors upserted"
         )
