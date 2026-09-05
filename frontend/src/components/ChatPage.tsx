@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
-import { approve, chat, toolStatusLabel } from '../api/client'
-import type { ChatMessage, TicketDraft } from '../api/types'
-import { ApprovalModal } from './ApprovalModal'
+import { Link } from 'react-router-dom'
+import { chat, getApproval, toolStatusLabel } from '../api/client'
+import type { ChatMessage } from '../api/types'
 import { MessageContent } from './MessageContent'
 
 const EXAMPLES = [
@@ -9,6 +9,9 @@ const EXAMPLES = [
   'Where is my order #1234?',
   "Please open a ticket — my laptop won't turn on. Email me at you@example.com",
 ]
+
+const WAITING_COPY =
+  "I've prepared a support ticket draft. A specialist is reviewing it now — I'll update this chat when they finish."
 
 function newId() {
   return crypto.randomUUID()
@@ -20,10 +23,10 @@ export function ChatPage() {
   const [busy, setBusy] = useState(false)
   const [statusText, setStatusText] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [pending, setPending] = useState<{
-    threadId: string
-    ticket: TicketDraft
-  } | null>(null)
+  const [waitingThreadId, setWaitingThreadId] = useState<string | null>(null)
+  const [waitingAssistantId, setWaitingAssistantId] = useState<string | null>(
+    null,
+  )
 
   const listRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -33,11 +36,59 @@ export function ChatPage() {
     const el = listRef.current
     if (!el) return
     el.scrollTop = el.scrollHeight
-  }, [messages, statusText, pending])
+  }, [messages, statusText, waitingThreadId])
 
   useEffect(() => {
     return () => abortRef.current?.abort()
   }, [])
+
+  // Poll until an admin resolves the pending ticket for this thread.
+  useEffect(() => {
+    if (!waitingThreadId || !waitingAssistantId) return
+
+    let cancelled = false
+    const assistantId = waitingAssistantId
+    const threadId = waitingThreadId
+
+    async function pollOnce() {
+      try {
+        const item = await getApproval(threadId)
+        if (cancelled || item.status === 'pending') return
+
+        const fallback =
+          item.status === 'approved'
+            ? 'Your ticket was approved and created.'
+            : 'Ticket creation was not approved. A human agent will follow up.'
+
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  text: item.bot_answer || fallback,
+                  streaming: false,
+                }
+              : m,
+          ),
+        )
+        setWaitingThreadId(null)
+        setWaitingAssistantId(null)
+        setStatusText('')
+      } catch {
+        // Keep waiting; queue row may lag the SSE pause briefly.
+      }
+    }
+
+    void pollOnce()
+    const timer = window.setInterval(() => {
+      void pollOnce()
+    }, 2500)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [waitingThreadId, waitingAssistantId])
 
   function updateAssistant(id: string, patch: Partial<ChatMessage>) {
     setMessages((prev) =>
@@ -85,11 +136,11 @@ export function ChatPage() {
         break
       }
       case 'approval_required': {
-        const ticket = data.ticket as TicketDraft | undefined
         const threadId = String(data.thread_id ?? '')
-        if (ticket && threadId) {
-          setPending({ threadId, ticket })
-          setStatusText('Waiting for ticket approval…')
+        if (threadId) {
+          setWaitingThreadId(threadId)
+          setWaitingAssistantId(assistantId)
+          setStatusText('Waiting for a specialist to review your ticket…')
         }
         break
       }
@@ -118,7 +169,7 @@ export function ChatPage() {
 
   async function sendQuestion(question: string) {
     const trimmed = question.trim()
-    if (!trimmed || busy || pending) return
+    if (!trimmed || busy || waitingThreadId) return
 
     abortRef.current?.abort()
     const controller = new AbortController()
@@ -160,7 +211,7 @@ export function ChatPage() {
           if (awaitingApproval) {
             return {
               ...m,
-              text: m.text || 'Ticket draft ready — please review and approve.',
+              text: m.text || WAITING_COPY,
               streaming: false,
             }
           }
@@ -181,59 +232,6 @@ export function ChatPage() {
       setStatusText('')
     } finally {
       setBusy(false)
-    }
-  }
-
-  async function resolveApproval(approved: boolean) {
-    if (!pending || busy) return
-    const { threadId } = pending
-    const assistantId = newId()
-
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: assistantId,
-        role: 'assistant',
-        text: '',
-        streaming: true,
-      },
-    ])
-    setBusy(true)
-    setError(null)
-    setStatusText(approved ? 'Creating support ticket…' : 'Closing ticket draft…')
-    setPending(null)
-
-    const controller = new AbortController()
-    abortRef.current = controller
-
-    try {
-      await approve(
-        threadId,
-        approved,
-        (event, data) => handleSse(event, data, assistantId),
-        controller.signal,
-      )
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                text: m.text || (approved ? 'Ticket approved.' : 'Ticket rejected.'),
-                streaming: false,
-              }
-            : m,
-        ),
-      )
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') return
-      setError((err as Error).message)
-      updateAssistant(assistantId, {
-        text: 'Could not complete the approval step.',
-        streaming: false,
-      })
-    } finally {
-      setBusy(false)
-      setStatusText('')
     }
   }
 
@@ -265,7 +263,7 @@ export function ChatPage() {
                     <button
                       type="button"
                       className="example-chip"
-                      disabled={busy}
+                      disabled={busy || Boolean(waitingThreadId)}
                       onClick={() => void sendQuestion(q)}
                     >
                       {q}
@@ -294,7 +292,20 @@ export function ChatPage() {
             </article>
           ))}
 
-          {statusText && (
+          {waitingThreadId && (
+            <div className="waiting-banner" role="status">
+              <span className="status-dot" aria-hidden="true" />
+              <div>
+                <strong>Ticket under review</strong>
+                <p>
+                  A teammate will approve or reject it in{' '}
+                  <Link to="/admin">Admin</Link>. This chat updates automatically.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {statusText && !waitingThreadId && (
             <div className="status-line" role="status">
               <span className="status-dot" aria-hidden="true" />
               {statusText}
@@ -312,10 +323,10 @@ export function ChatPage() {
             id={inputId}
             rows={2}
             value={input}
-            disabled={busy || Boolean(pending)}
+            disabled={busy || Boolean(waitingThreadId)}
             placeholder={
-              pending
-                ? 'Approve or reject the ticket to continue…'
+              waitingThreadId
+                ? 'Waiting for ticket review…'
                 : 'Ask a support question…'
             }
             onChange={(e) => setInput(e.target.value)}
@@ -329,21 +340,12 @@ export function ChatPage() {
           <button
             type="submit"
             className="btn btn-primary"
-            disabled={busy || Boolean(pending) || !input.trim()}
+            disabled={busy || Boolean(waitingThreadId) || !input.trim()}
           >
             Send
           </button>
         </form>
       </div>
-
-      {pending && (
-        <ApprovalModal
-          ticket={pending.ticket}
-          busy={busy}
-          onApprove={() => void resolveApproval(true)}
-          onReject={() => void resolveApproval(false)}
-        />
-      )}
     </section>
   )
 }

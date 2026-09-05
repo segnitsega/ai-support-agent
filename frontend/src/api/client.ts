@@ -1,5 +1,5 @@
 import { streamSse } from './sse'
-import type { SseHandler, Stats } from './types'
+import type { ApprovalItem, ApprovalStatus, SseHandler, Stats } from './types'
 
 export function chat(question: string, onEvent: SseHandler, signal?: AbortSignal) {
   return streamSse('/chat', { question }, onEvent, signal)
@@ -20,6 +20,33 @@ export async function getStats(): Promise<Stats> {
     throw new Error(`Failed to load stats (${response.status})`)
   }
   return response.json() as Promise<Stats>
+}
+
+export async function listApprovals(
+  status: ApprovalStatus | 'all' = 'pending',
+  limit = 50,
+): Promise<ApprovalItem[]> {
+  const params = new URLSearchParams({
+    status,
+    limit: String(limit),
+  })
+  const response = await fetch(`/approvals?${params}`)
+  if (!response.ok) {
+    throw new Error(`Failed to load approvals (${response.status})`)
+  }
+  return response.json() as Promise<ApprovalItem[]>
+}
+
+export async function getApproval(threadId: string): Promise<ApprovalItem> {
+  const response = await fetch(`/approvals/${encodeURIComponent(threadId)}`)
+  if (!response.ok) {
+    throw new Error(
+      response.status === 404
+        ? 'Approval not found.'
+        : `Failed to load approval (${response.status})`,
+    )
+  }
+  return response.json() as Promise<ApprovalItem>
 }
 
 export function toolStatusLabel(tool: string): string {

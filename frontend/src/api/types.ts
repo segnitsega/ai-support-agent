@@ -11,6 +11,20 @@ export type Stats = {
   tickets_created: number
 }
 
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected'
+
+export type ApprovalItem = {
+  thread_id: string
+  status: ApprovalStatus
+  user_question: string
+  route: string
+  ticket: TicketDraft
+  bot_answer: string
+  created_at: string
+  updated_at: string
+  resolved_at: string | null
+}
+
 export type SseHandler = (event: string, data: Record<string, unknown>) => void
 
 export type ChatMessage = {

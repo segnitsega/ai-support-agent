@@ -16,6 +16,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <NavLink to="/" end>
             Chat
           </NavLink>
+          <NavLink to="/admin">Admin</NavLink>
           <NavLink to="/dashboard">Dashboard</NavLink>
         </nav>
       </header>
