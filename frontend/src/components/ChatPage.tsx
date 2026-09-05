@@ -23,7 +23,6 @@ export function ChatPage() {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [statusText, setStatusText] = useState('')
-  const [error, setError] = useState<string | null>(null)
   const [waitingThreadId, setWaitingThreadId] = useState<string | null>(null)
   const [waitingAssistantId, setWaitingAssistantId] = useState<string | null>(
     null,
@@ -40,7 +39,7 @@ export function ChatPage() {
     // Keep the latest message in view while streaming / after each update.
     el.scrollTop = el.scrollHeight
     bottomRef.current?.scrollIntoView({ block: 'end' })
-  }, [messages, statusText, waitingThreadId, error])
+  }, [messages, statusText, waitingThreadId])
 
   useEffect(() => {
     return () => abortRef.current?.abort()
@@ -163,7 +162,6 @@ export function ChatPage() {
       }
       case 'error': {
         const message = friendlyError(data.message)
-        setError(message)
         setStatusText('')
         updateAssistant(assistantId, {
           text: message,
@@ -199,7 +197,6 @@ export function ChatPage() {
 
     setMessages((prev) => [...prev, userMsg, assistantMsg])
     setInput('')
-    setError(null)
     setBusy(true)
     setStatusText('Thinking…')
 
@@ -246,7 +243,6 @@ export function ChatPage() {
     } catch (err) {
       if ((err as Error).name === 'AbortError') return
       const message = friendlyError(err)
-      setError(message)
       updateAssistant(assistantId, {
         text: message,
         streaming: false,
@@ -335,8 +331,6 @@ export function ChatPage() {
           )}
           <div ref={bottomRef} aria-hidden="true" />
         </div>
-
-        {error && <p className="error-banner">{error}</p>}
 
         <form className="composer" onSubmit={onSubmit}>
           <label className="sr-only" htmlFor={inputId}>
