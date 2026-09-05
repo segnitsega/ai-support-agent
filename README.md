@@ -131,6 +131,30 @@ npm run dev            # http://127.0.0.1:5173
 
 Vite proxies `/chat`, `/approve`, `/approvals`, and `/stats` to the API.
 
+### Docker (recommended for demos / client handoff)
+
+Requires Docker + Compose, and a filled `backend/.env`.
+
+```bash
+# from repo root
+docker compose up --build
+```
+
+- **App UI:** http://127.0.0.1:8080  
+- **API (direct):** http://127.0.0.1:8000  
+
+First-time helpers (optional):
+
+```bash
+# seed demo orders into the mounted SQLite volume
+docker compose exec api uv run python -m app.mcp.seed_orders
+
+# ingest / refresh the support handbook into Pinecone
+docker compose exec api uv run python -m app.rag ingest --embed-batch-delay 0
+```
+
+See the Docker layout notes below for what each file does.
+
 ### Demo script (client walkthrough)
 
 1. **Policy:** “What is your return policy?” → streaming RAG answer
@@ -153,6 +177,19 @@ Vite proxies `/chat`, `/approve`, `/approvals`, and `/stats` to the API.
 | `GET`  | `/approvals` | Admin queue (`?status=pending`)                                  |
 | `GET`  | `/stats`     | Dashboard metrics                                                |
 
+
+---
+
+## Docker layout
+
+| File | Role |
+| --- | --- |
+| `backend/Dockerfile` | Python 3.13 image: installs deps with `uv`, runs uvicorn |
+| `frontend/Dockerfile` | Multi-stage: `npm run build`, then nginx serves `dist/` |
+| `frontend/nginx.conf` | SPA routing + reverse-proxy of `/chat`, `/approve`, `/stats`, `/approvals` to the `api` service (SSE buffering off) |
+| `docker-compose.yml` | Starts `api` + `web`, mounts `backend/data` for SQLite + handbook, loads `backend/.env` |
+
+The nginx container replaces the Vite **dev** proxy: the browser only talks to port **8080**; API calls stay same-origin.
 
 ---
 

@@ -1,0 +1,38 @@
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: segni-support-api
+    env_file:
+      - ./backend/.env
+    environment:
+      # Persist SQLite on the shared data volume
+      ORDERS_DB_PATH: /app/data/orders.db
+      STATS_DB_PATH: /app/data/stats.db
+      APPROVALS_DB_PATH: /app/data/approvals.db
+      PYTHONPATH: /app
+    volumes:
+      # Handbook + SQLite DBs survive container rebuilds
+      - ./backend/data:/app/data
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/stats"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: segni-support-web
+    ports:
+      - "8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
