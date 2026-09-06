@@ -31,10 +31,11 @@ services:
       dockerfile: Dockerfile
     container_name: segni-support-web
     environment:
-      API_UPSTREAM: http://api:8000
-      PORT: "80"
+      # Browser reaches the API via the host-mapped port (not the Docker DNS name)
+      VITE_API_URL: http://127.0.0.1:8000
+      PORT: "3000"
     ports:
-      - "8080:80"
+      - "8080:3000"
     depends_on:
       api:
         condition: service_healthy

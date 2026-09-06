@@ -1,8 +1,9 @@
+import { apiUrl } from './baseUrl'
 import { streamSse } from './sse'
 import type { ApprovalItem, ApprovalStatus, SseHandler, Stats } from './types'
 
 export function chat(question: string, onEvent: SseHandler, signal?: AbortSignal) {
-  return streamSse('/chat', { question }, onEvent, signal)
+  return streamSse(apiUrl('/chat'), { question }, onEvent, signal)
 }
 
 export function approve(
@@ -11,11 +12,16 @@ export function approve(
   onEvent: SseHandler,
   signal?: AbortSignal,
 ) {
-  return streamSse('/approve', { thread_id: threadId, approved }, onEvent, signal)
+  return streamSse(
+    apiUrl('/approve'),
+    { thread_id: threadId, approved },
+    onEvent,
+    signal,
+  )
 }
 
 export async function getStats(): Promise<Stats> {
-  const response = await fetch('/stats')
+  const response = await fetch(apiUrl('/stats'))
   if (!response.ok) {
     throw new Error(`Failed to load stats (${response.status})`)
   }
@@ -30,7 +36,7 @@ export async function listApprovals(
     status,
     limit: String(limit),
   })
-  const response = await fetch(`/approvals?${params}`)
+  const response = await fetch(apiUrl(`/approvals?${params}`))
   if (!response.ok) {
     throw new Error(`Failed to load approvals (${response.status})`)
   }
@@ -38,7 +44,9 @@ export async function listApprovals(
 }
 
 export async function getApproval(threadId: string): Promise<ApprovalItem> {
-  const response = await fetch(`/approvals/${encodeURIComponent(threadId)}`)
+  const response = await fetch(
+    apiUrl(`/approvals/${encodeURIComponent(threadId)}`),
+  )
   if (!response.ok) {
     throw new Error(
       response.status === 404

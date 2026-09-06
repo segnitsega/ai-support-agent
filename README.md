@@ -161,11 +161,12 @@ See the Docker layout notes below for what each file does.
 | File | Role |
 | --- | --- |
 | `backend/Dockerfile` | Python 3.13 image: installs deps with `uv`, runs uvicorn |
-| `frontend/Dockerfile` | Multi-stage: `npm run build`, then nginx serves `dist/` and proxies API paths |
-| `frontend/nginx.conf.template` | SPA routing + reverse-proxy of `/chat`, `/approve`, `/stats`, `/approvals` (SSE buffering off); `API_UPSTREAM` injected at container start |
+| `frontend/Dockerfile` | Multi-stage: `npm run build`, then `serve` hosts `dist/` on `$PORT` |
+| `frontend/docker-entrypoint.sh` | Writes `/config.js` from `VITE_API_URL`, then starts `serve` (SPA mode) |
 | `docker-compose.yml` | Starts `api` + `web`, mounts `backend/data` for SQLite + handbook, loads `backend/.env` |
 
-The nginx container replaces the Vite **dev** proxy: the browser only talks to port **8080**; API calls stay same-origin. On Render, set `API_UPSTREAM` to your backend’s public URL.
+The browser calls the API **directly** using `VITE_API_URL` (injected at container start into `config.js`). Local `npm run dev` leaves that empty and uses the Vite proxy instead. On Render, set `VITE_API_URL` to your backend’s public URL (e.g. `https://YOUR-API.onrender.com`).
+
 
 ---
 

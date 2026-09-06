@@ -1,18 +1,15 @@
 #!/bin/sh
 set -eu
 
-export PORT="${PORT:-80}"
+# Browser calls the API directly (CORS is enabled on FastAPI).
+# Local Compose: http://127.0.0.1:8000
+# Render:        https://YOUR-API.onrender.com
+API_BASE="${VITE_API_URL:-}"
+API_BASE="${API_BASE%/}"
 
-# Compose: http://api:8000
-# Render:  https://YOUR-API-SERVICE.onrender.com  (public URL — most reliable)
-export API_UPSTREAM="${API_UPSTREAM:-http://api:8000}"
+cat > /app/dist/config.js <<EOF
+window.__API_BASE__ = "${API_BASE}";
+EOF
 
-export API_HOST="$(
-  printf '%s' "$API_UPSTREAM" | sed -e 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||' -e 's|/.*||'
-)"
-
-envsubst '${PORT} ${API_UPSTREAM} ${API_HOST}' \
-  < /etc/nginx/nginx.conf.template \
-  > /etc/nginx/conf.d/default.conf
-
-exec nginx -g 'daemon off;'
+# -s: SPA fallback to index.html for /admin, /dashboard, …
+exec serve -s dist -l "tcp://0.0.0.0:${PORT:-3000}"
