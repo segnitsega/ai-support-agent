@@ -191,16 +191,17 @@ The demo store (**Segni Electronics**) is a stand-in. Your policies and tools pl
 
 ---
 
-## Demo video
+## Demo
 
-Screen recording of the live app (chat, tools, admin approval, dashboard):
+Live walkthrough of the app (chat, tools, admin approval, dashboard):
 
-<video src="./demo-screen-record.webm" controls width="100%">
-  Your browser can’t play embedded video.
-  <a href="./demo-screen-record.webm">Download the demo recording</a>
-</video>
+![Live app walkthrough](demos/demo.mp4)
 
-[Open the recording](./demo-screen-record.webm)
+### Airtable tickets
+
+After an admin approves a draft in the app, the ticket is created in Airtable:
+
+![Airtable tickets table](demos/screenshot.png)
 
 ---
 
