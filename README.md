@@ -191,6 +191,19 @@ The demo store (**Segni Electronics**) is a stand-in. Your policies and tools pl
 
 ---
 
+## Demo video
+
+Screen recording of the live app (chat, tools, admin approval, dashboard):
+
+<video src="./demo-screen-record.webm" controls width="100%">
+  Your browser can’t play embedded video.
+  <a href="./demo-screen-record.webm">Download the demo recording</a>
+</video>
+
+[Open the recording](./demo-screen-record.webm)
+
+---
+
 ## License
 
 Private project source.

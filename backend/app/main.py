@@ -21,6 +21,7 @@ from app.approvals import (
     upsert_pending,
 )
 from app.graph.main import _answer_text, app as agent
+from app.mcp.orders_db import seed_orders
 from app.stats import get_stats, init_db as init_stats_db, record_run
 
 SSE_HEADERS = {
@@ -71,6 +72,10 @@ class ApprovalItem(BaseModel):
 async def lifespan(_app: FastAPI):
     init_stats_db()
     init_approvals_db()
+    # Demo orders — same seed the order MCP server applies, but at API boot
+    # so Render / cold starts are ready before the first order lookup.
+    order_count = seed_orders(reset=False)
+    print(f"[startup] demo orders ready ({order_count} row(s))")
     yield
 
 
