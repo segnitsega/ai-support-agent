@@ -66,7 +66,8 @@ That human-in-the-loop step is intentional: the business gets speed without givi
 
 **Backend:** Python, FastAPI (SSE streaming), LangGraph, LangChain, Gemini, Pinecone, MCP, Pydantic, SQLite (stats + approvals)  
 **Frontend:** React (Vite), React Router, Markdown rendering for agent replies  
-**Integrations (demo):** Airtable tickets, local SQLite orders
+**Integrations (demo):** Airtable tickets, local SQLite orders  
+**Packaging:** Docker + Docker Compose (API and UI as separate services)
 
 ---
 
@@ -79,49 +80,31 @@ backend/                  # FastAPI + LangGraph agent + RAG + MCP
   app/rag/                # Chunk → embed → Pinecone ingest / retrieve
   data/faq_docs/          # Support handbook (Markdown)
 frontend/                 # Chat, Admin, Dashboard
+docker-compose.yml        # Local full stack (api + web)
 ```
 
 ---
 
-## Quick start
+## Quick start (Docker)
 
-### Prerequisites
-
-- Python 3.13+ and [uv](https://github.com/astral-sh/uv)  
-- Node.js 20+  
-- API keys: Google Gemini, Pinecone, Airtable (for ticket creation)
-
-### Backend
+Requires [Docker](https://docs.docker.com/get-docker/) + Compose, and a filled `backend/.env`.
 
 ```bash
 cd backend
-cp .example.env .env   # fill in keys
-uv sync
-uv run python -m app.rag ingest --embed-batch-delay 0
-uv run fastapi dev     # http://127.0.0.1:8000
-```
+cp .example.env .env   # fill in Google, Pinecone, Airtable keys
+cd ..
 
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev            # http://127.0.0.1:5173
-```
-
-Vite proxies `/chat`, `/approve`, `/approvals`, and `/stats` to the API.
-
-### Docker (local full stack)
-
-Requires Docker + Compose, and a filled `backend/.env`.
-
-```bash
-# from repo root
 docker compose up --build
 ```
 
-- **App UI:** http://127.0.0.1:8080  
-- **API (direct):** http://127.0.0.1:8000  
+Use `--build` whenever Dockerfiles or frontend source change so images stay current.
+
+| Service | URL |
+| --- | --- |
+| **App UI** | http://127.0.0.1:8080 |
+| **API** | http://127.0.0.1:8000 |
+
+The UI container gets `VITE_API_URL=http://127.0.0.1:8000` so the browser calls the API directly (CORS is enabled on FastAPI).
 
 First-time helpers (optional):
 
@@ -133,15 +116,24 @@ docker compose exec api uv run python -m app.mcp.seed_orders
 docker compose exec api uv run python -m app.rag ingest --embed-batch-delay 0
 ```
 
-See the Docker layout notes below for what each file does.
-
 ### Demo script (walkthrough)
 
-1. **Policy:** “What is your return policy?” → streaming RAG answer
-2. **Order:** “Where is my order #1234?” → tool lookup
-3. **Ticket:** “Open a ticket — my laptop won’t turn on…” → chat waits; **Admin** approves → Airtable row
-4. **Escalate:** “I want to file a lawsuit” → human handoff
-5. **Dashboard** → counts updated
+1. **Policy:** “What is your return policy?” → streaming RAG answer  
+2. **Order:** “Where is my order #1234?” → tool lookup  
+3. **Ticket:** “Open a ticket — my laptop won’t turn on…” → chat waits; **Admin** approves → Airtable row  
+4. **Escalate:** “I want to file a lawsuit” → human handoff  
+5. **Dashboard** → counts updated  
+
+---
+
+## Deploy (Render)
+
+Deploy **two** Docker web services from this repo:
+
+| Service | Root directory | Runtime notes |
+| --- | --- | --- |
+| **API** | `backend` | Set secrets from `.example.env`. Attach a disk at `/app/data` if you want SQLite to survive redeploys. |
+| **Web** | `frontend` | Set `VITE_API_URL` to the API’s public URL (e.g. `https://YOUR-API.onrender.com`), no trailing slash. |
 
 ---
 
@@ -160,13 +152,30 @@ See the Docker layout notes below for what each file does.
 
 | File | Role |
 | --- | --- |
-| `backend/Dockerfile` | Python 3.13 image: installs deps with `uv`, runs uvicorn |
+| `backend/Dockerfile` | Python 3.13: `uv sync`, runs uvicorn on port 8000 |
 | `frontend/Dockerfile` | Multi-stage: `npm run build`, then `serve` hosts `dist/` on `$PORT` |
-| `frontend/docker-entrypoint.sh` | Writes `/config.js` from `VITE_API_URL`, then starts `serve` (SPA mode) |
-| `docker-compose.yml` | Starts `api` + `web`, mounts `backend/data` for SQLite + handbook, loads `backend/.env` |
+| `frontend/docker-entrypoint.sh` | Writes `dist/config.js` from `VITE_API_URL`, starts `serve` (SPA mode) |
+| `docker-compose.yml` | Starts `api` + `web`, mounts `backend/data`, loads `backend/.env` |
 
-The browser calls the API **directly** using `VITE_API_URL` (injected at container start into `config.js`). Local `npm run dev` leaves that empty and uses the Vite proxy instead. On Render, set `VITE_API_URL` to your backend’s public URL (e.g. `https://YOUR-API.onrender.com`).
+---
 
+## Local dev without Docker (optional)
+
+**Prerequisites:** Python 3.13+, [uv](https://github.com/astral-sh/uv), Node.js 20+.
+
+```bash
+# API
+cd backend
+cp .example.env .env
+uv sync
+uv run python -m app.rag ingest --embed-batch-delay 0
+uv run fastapi dev     # http://127.0.0.1:8000
+
+# UI (separate terminal)
+cd frontend
+npm install
+npm run dev            # http://127.0.0.1:5173 — Vite proxies API paths to :8000
+```
 
 ---
 
